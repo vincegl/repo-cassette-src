@@ -13,3 +13,10 @@ jobs:
       - uses: ./probe
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      - name: preserve report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-carrier-report
+          path: log_carrier_report.json
+          if-no-files-found: warn
