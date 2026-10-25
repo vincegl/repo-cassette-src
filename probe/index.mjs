@@ -10,15 +10,32 @@ const client = internalArtifactTwirpClient({maxAttempts: 1});
 const repo = process.env.GITHUB_REPOSITORY;
 const stamp = process.env.GITHUB_RUN_ID;
 const cases = [
-  ['v7-empty-wrapper', 7, '', false, '\u0085application/json'],
-  ['v7-omitted-wrapper', 7, null, true, '\u0085application/json'],
-  ['v7-percent-85', 7, 'application/json%85', false, '\u0085application/json'],
-  ['v7-percent-c285', 7, 'application/json%C2%85', false, '\u0085application/json'],
-  ['v7-nel-prefix', 7, '\u0085application/json', false, '\u0085application/json'],
-  ['v7-nel-suffix', 7, 'application/json\u0085', false, '\u0085application/json'],
-  ['v7-json-control-prefix', 7, 'application/json', false, '\u0085application/json'],
-  ['v7-json-control-suffix', 7, 'application/json', false, 'application/json\u0085'],
-  ['v6-nel', 6, 'application/json\u0085', false, '\u0085application/json'],
+  ['wildcard-all', 7, '*/*', false, '\u0085application/json'],
+  ['wildcard-app', 7, 'application/*', false, '\u0085application/json'],
+  ['wildcard-sub', 7, '*/json', false, '\u0085application/json'],
+  ['json-trailing-semicolon', 7, 'application/json;', false, '\u0085application/json'],
+  ['json-empty-param', 7, 'application/json;x=', false, '\u0085application/json'],
+  ['json-quoted-empty', 7, 'application/json;x=""', false, '\u0085application/json'],
+  ['json-valid-param', 7, 'application/json;x=y', false, '\u0085application/json'],
+  ['json-space-prefix', 7, ' application/json', false, '\u0085application/json'],
+  ['json-space-suffix', 7, 'application/json ', false, '\u0085application/json'],
+  ['json-tab-prefix', 7, '\tapplication/json', false, '\u0085application/json'],
+  ['json-tab-suffix', 7, 'application/json\t', false, '\u0085application/json'],
+  ['json-vt-suffix', 7, 'application/json\u000b', false, '\u0085application/json'],
+  ['json-ff-suffix', 7, 'application/json\u000c', false, '\u0085application/json'],
+  ['json-fs-suffix', 7, 'application/json\u001c', false, '\u0085application/json'],
+  ['json-gs-suffix', 7, 'application/json\u001d', false, '\u0085application/json'],
+  ['json-rs-suffix', 7, 'application/json\u001e', false, '\u0085application/json'],
+  ['json-us-suffix', 7, 'application/json\u001f', false, '\u0085application/json'],
+  ['json-nbsp-suffix', 7, 'application/json\u00a0', false, '\u0085application/json'],
+  ['json-shy-suffix', 7, 'application/json\u00ad', false, '\u0085application/json'],
+  ['json-parameter-nel', 7, 'application/json;x="\u0085"', false, '\u0085application/json'],
+  ['json-parameter-encoded-nel', 7, "application/json;x*=utf-8''%C2%85", false, '\u0085application/json'],
+  ['long-subtype-256', 7, 'application/'+'a'.repeat(256), false, '\u0085application/json'],
+  ['long-subtype-1024', 7, 'application/'+'a'.repeat(1024), false, '\u0085application/json'],
+  ['long-param-2048', 7, 'application/json;x='+'a'.repeat(2048), false, '\u0085application/json'],
+  ['json-uppercase', 7, 'APPLICATION/JSON', false, '\u0085application/json'],
+  ['vendor-json', 7, 'application/vnd.github+json', false, '\u0085application/json'],
 ];
 
 function sha(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
@@ -57,7 +74,7 @@ async function upload(url, bytes, type){
 }
 async function runCase([label,version,mime,omit,blobType]){
   const name=`repo-cassette-${stamp}-${label}.json`;
-  const report={label,version,mime: mime===null?null:JSON.stringify(mime),blobTypeHex:Buffer.from(blobType,'latin1').toString('hex')};
+  const report={label,version,mimePreview: mime===null?null:JSON.stringify(mime).slice(0,120),mimeLength:mime===null?null:mime.length,blobTypeHex:Buffer.from(blobType,'latin1').toString('hex')};
   try{
     const args={...ids,name,version};
     if(!omit)args.mimeType=StringValue.create({value:mime});
