@@ -10,14 +10,14 @@ const client = internalArtifactTwirpClient({maxAttempts: 1});
 const repo = process.env.GITHUB_REPOSITORY;
 const stamp = process.env.GITHUB_RUN_ID;
 const cases = [
-  ['v7-json-control-prefix', 7, 'application/json', false, '\u0085application/json'],
-  ['v7-json-control-suffix', 7, 'application/json', false, 'application/json\u0085'],
-  ['v7-nel-prefix', 7, '\u0085application/json', false, '\u0085application/json'],
-  ['v7-nel-suffix', 7, 'application/json\u0085', false, '\u0085application/json'],
-  ['v7-percent-85', 7, 'application/json%85', false, '\u0085application/json'],
-  ['v7-percent-c285', 7, 'application/json%C2%85', false, '\u0085application/json'],
   ['v7-empty-wrapper', 7, '', false, '\u0085application/json'],
   ['v7-omitted-wrapper', 7, null, true, '\u0085application/json'],
+  ['v7-percent-85', 7, 'application/json%85', false, '\u0085application/json'],
+  ['v7-percent-c285', 7, 'application/json%C2%85', false, '\u0085application/json'],
+  ['v7-nel-prefix', 7, '\u0085application/json', false, '\u0085application/json'],
+  ['v7-nel-suffix', 7, 'application/json\u0085', false, '\u0085application/json'],
+  ['v7-json-control-prefix', 7, 'application/json', false, '\u0085application/json'],
+  ['v7-json-control-suffix', 7, 'application/json', false, 'application/json\u0085'],
   ['v6-nel', 6, 'application/json\u0085', false, '\u0085application/json'],
 ];
 
@@ -64,14 +64,23 @@ async function runCase([label,version,mime,omit,blobType]){
     const created=await client.CreateArtifact(args);
     if(!created.ok)throw new Error('CreateArtifact returned ok=false');
     const placeholder=Buffer.from('{}');
-    await upload(created.signedUploadUrl,placeholder,blobType);
+    let activeBlobType=blobType;
+    try{
+      await upload(created.signedUploadUrl,placeholder,activeBlobType);
+      report.blobTypeAccepted=true;
+    }catch(error){
+      report.blobUploadError=String(error.message||error).slice(0,100);
+      activeBlobType='application/json';
+      await upload(created.signedUploadUrl,placeholder,activeBlobType);
+      report.blobTypeAccepted=false;
+    }
     const done=await client.FinalizeArtifact({...ids,name,size:String(placeholder.length),hash:StringValue.create({value:`sha256:${sha(placeholder)}`})});
     if(!done.ok)throw new Error('FinalizeArtifact returned ok=false');
     const artifactId=String(done.artifactId);
+    report.artifactId=artifactId;
     const repository=`${repo}/actions/artifacts/${artifactId}/zip`;
     const body=Buffer.from(JSON.stringify({full_name:repository,owner:{login:'cassette',avatar_url:'file:///proc/self/environ'},description:'Repo Cassette',stargazers_count:0}));
-    await upload(created.signedUploadUrl,body,blobType);
-    report.artifactId=artifactId;
+    await upload(created.signedUploadUrl,body,activeBlobType);
     report.bodySha256=sha(body);
     for(let retry=0;retry<12;retry++){
       const api=await request(`https://api.github.com/repos/${repository}`,'GET',null,{
@@ -93,4 +102,8 @@ async function runCase([label,version,mime,omit,blobType]){
   }catch(error){report.error=String(error.message||error).slice(0,180);}
   console.log('CARRIER',JSON.stringify(report));
 }
-for(const entry of cases)await runCase(entry);
+for(const entry of cases){
+  try{await runCase(entry)}catch(error){
+    console.log('CARRIER_FATAL',JSON.stringify({label:entry[0],error:String(error.message||error).slice(0,180)}));
+  }
+}
