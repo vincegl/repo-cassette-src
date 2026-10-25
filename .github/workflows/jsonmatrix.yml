@@ -1,0 +1,15 @@
+name: Repo Cassette Twirp JSON field probe
+on:
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - uses: ./jsonmatrix
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
