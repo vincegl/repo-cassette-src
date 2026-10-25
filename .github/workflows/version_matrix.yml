@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: npm install --ignore-scripts --no-audit --no-fund
-      - run: node crossjob/version_matrix.mjs
+      - uses: ./vmatrix
         env:
           CARRIER_VARIANT: ${{ matrix.variant }}
           GITHUB_TOKEN: ${{ github.token }}
