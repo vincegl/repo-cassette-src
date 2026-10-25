@@ -1,0 +1,13 @@
+name: MIME allowlist enumeration
+on:
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+jobs:
+  enum:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - uses: ./enumprobe
