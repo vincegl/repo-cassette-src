@@ -1,0 +1,20 @@
+name: Repo Cassette artifact version matrix
+on:
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [raw, legacy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: node crossjob/version_matrix.mjs
+        env:
+          CARRIER_VARIANT: ${{ matrix.variant }}
+          GITHUB_TOKEN: ${{ github.token }}
