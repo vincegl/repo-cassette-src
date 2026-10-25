@@ -1,0 +1,20 @@
+name: Repo Cassette cross-job artifact identity probe
+on:
+  workflow_dispatch:
+permissions:
+  actions: write
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [legacy, raw]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - uses: ./crossjob
+        env:
+          CARRIER_VARIANT: ${{ matrix.variant }}
+          GITHUB_TOKEN: ${{ github.token }}
